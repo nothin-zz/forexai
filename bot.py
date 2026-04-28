@@ -1,12 +1,9 @@
 """
-bot.py — Forex AI Self-Learning Telegram Bot
-FREE VERSION:
-Twelve Data + Gemini AI + Self-Learning
+bot.py — Forex AI Self-Learning Telegram Bot (Yaxshilangan versiya)
 """
 
 import logging
 import asyncio
-import base64
 import json
 import re
 
@@ -35,11 +32,7 @@ from oanda_engine import (
 # ─────────────────────────────────────────
 
 TELEGRAM_TOKEN = "8776282635:AAExON8KZhR8w_ZfZthurcLb7LB2AsMuk9A"
-
-# Gemini API key (Claude o‘rniga)
 GEMINI_API_KEY = "AIzaSyDQ2oUz2d-2ZpIM0sAc1F4oOPmSQxl3sYE"
-
-# ─────────────────────────────────────────
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -94,10 +87,12 @@ def pairs_kb():
     row = []
 
     for pair in WATCH_PAIRS:
+        # Ko‘rsatish uchun slash qo‘shib chiqaramiz (foydalanuvchiga chiroyli)
+        display_pair = pair.replace("USD", "/USD") if "USD" in pair else pair
         row.append(
             InlineKeyboardButton(
-                pair.replace("_", "/"),
-                callback_data=f"scan_{pair}"
+                display_pair,
+                callback_data=f"scan_{pair}"   # callbackda slashsiz saqlaymiz
             )
         )
 
@@ -129,9 +124,11 @@ def format_signal(d: dict, sid: int):
     else:
         icon = "🟡 WAIT ⏳"
 
+    pair_display = d.get('pair', '?').replace("USD", "/USD") if "USD" in d.get('pair', '') else d.get('pair', '?')
+
     return (
         f"🤖 *FOREX AI SIGNAL*\n\n"
-        f"💱 Pair: *{d.get('pair', '?')}*\n"
+        f"💱 Pair: *{pair_display}*\n"
         f"⏰ TF: `{d.get('timeframe', '?')}`\n"
         f"📡 Signal: *{icon}*\n"
         f"💪 Confidence: `{d.get('confidence', 50)}%`\n\n"
@@ -147,7 +144,7 @@ def format_signal(d: dict, sid: int):
         f"📊 Trend: `{d.get('trend', '?')}`\n"
         f"🕯 Pattern: `{d.get('pattern', '?')}`\n\n"
 
-        f"💡 Reason:\n_{d.get('reasoning', '')}_\n\n"
+        f"💡 Reason:\n_{d.get('reasoning', 'Sabab ko‘rsatilmagan')}_\n\n"
 
         f"🔢 Signal ID: `#{sid}`\n\n"
         f"_Savdo o‘z xavfi bilan_"
@@ -160,7 +157,7 @@ def format_signal(d: dict, sid: int):
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    name = update.effective_user.first_name
+    name = update.effective_user.first_name or "Foydalanuvchi"
 
     ensure_user(uid)
 
@@ -187,34 +184,35 @@ async def auto_scan_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def do_scan(update, ctx, pair, timeframe, uid):
+    display_pair = pair.replace("USD", "/USD") if "USD" in pair else pair
     m = await update.effective_message.reply_text(
-        f"⏳ {pair.replace('_', '/')} tahlil qilinmoqda..."
+        f"⏳ {display_pair} tahlil qilinmoqda..."
     )
 
     try:
         candles = get_candles(pair, timeframe, 100)
 
         if not candles:
-            await m.edit_text("❌ Candle topilmadi")
+            await m.edit_text(f"❌ {display_pair} uchun candle topilmadi.\nAPI javobi bo‘sh.")
             return
 
         knowledge = get_ai_knowledge()
 
         result = analyze_with_ai(
-            pair,
+            pair,          # engine ga slashsiz yuboramiz
             timeframe,
             candles,
             knowledge
         )
 
-        if not result:
-            await m.edit_text("❌ AI signal topmadi")
+        if not result or not result.get("signal"):
+            await m.edit_text("❌ AI signal yarata olmadi. Qayta urinib ko‘ring.")
             return
 
         sid = save_signal(
             uid,
-            result.get("pair", "?"),
-            result.get("timeframe", "?"),
+            result.get("pair", pair),
+            result.get("timeframe", timeframe),
             result.get("signal", "WAIT"),
             result.get("pattern", "Unknown"),
             str(result.get("entry", "?")),
@@ -222,11 +220,6 @@ async def do_scan(update, ctx, pair, timeframe, uid):
             str(result.get("tp1", "?")),
             str(result.get("tp2", "?")),
             str(result.get("tp3", "?")),
-            str(result.get("sl_pips", "?")),
-            str(result.get("tp1_pips", "?")),
-            str(result.get("tp2_pips", "?")),
-            str(result.get("tp3_pips", "?")),
-            str(result.get("risk_reward", "?")),
             result.get("confidence", 50),
             result.get("market_structure", ""),
             result.get("indicators_summary", ""),
@@ -242,12 +235,12 @@ async def do_scan(update, ctx, pair, timeframe, uid):
         )
 
     except Exception as e:
-        logger.error(e)
-        await m.edit_text(f"❌ Xato: {str(e)}")
+        logger.error(f"Do scan error: {e}")
+        await m.edit_text(f"❌ Xato yuz berdi: {str(e)[:200]}")
 
 
 # ═══════════════════════════════════════════
-# CALLBACK
+# CALLBACK HANDLER
 # ═══════════════════════════════════════════
 
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -264,9 +257,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_reply_markup(reply_markup=None)
 
         if pair == "ALL":
-            await q.message.reply_text(
-                "🔍 Barcha juftliklar skan qilinmoqda..."
-            )
+            await q.message.reply_text("🔍 Barcha juftliklar skan qilinmoqda... (hozircha bitta-bitta ishlaydi)")
+            # Keyinchalik scan_all_pairs ni qo'shamiz
         else:
             await do_scan(update, ctx, pair, tf, uid)
 
@@ -279,20 +271,16 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if result_type == "SKIP":
             await q.edit_message_reply_markup(reply_markup=None)
+            await q.message.reply_text("⏭ Signal o‘tkazib yuborildi.")
             return
 
         pl = 2.0 if result_type == "WIN" else -1.0
 
-        update_signal_result(
-            sid,
-            result_type,
-            pl
-        )
+        update_signal_result(sid, result_type, pl)
 
         await q.edit_message_reply_markup(reply_markup=None)
-
         await q.message.reply_text(
-            f"🧠 Natija saqlandi: `{result_type}`",
+            f"🧠 Natija saqlandi: *{result_type}*",
             parse_mode="Markdown"
         )
 
@@ -309,17 +297,16 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif text == "ℹ️ Yordam":
         await update.message.reply_text(
-            "📘 Tugmalar orqali foydalaning:\n\n"
-            "🤖 Auto Skan\n"
-            "📸 Manual\n"
-            "📜 Pine Script\n"
-            "🔔 Bildirishnoma"
+            "📘 Botdan foydalanish:\n\n"
+            "• 🤖 Auto Skan — avtomatik signal olish\n"
+            "• 📸 Manual Tahlil — kelajakda qo‘lda tahlil\n"
+            "• 📊 Statistika — natijalarni ko‘rish\n\n"
+            "Savollaringiz bo‘lsa yozing!",
+            parse_mode="Markdown"
         )
 
     else:
-        await update.message.reply_text(
-            "Tugmalardan foydalaning 🙂"
-        )
+        await update.message.reply_text("Iltimos, pastdagi tugmalardan birini bosing 🙂")
 
 
 # ═══════════════════════════════════════════
@@ -329,31 +316,17 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
 
-    app = Application.builder().token(
-        TELEGRAM_TOKEN
-    ).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    app.add_handler(
-        CommandHandler("start", cmd_start)
-    )
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(CallbackQueryHandler(on_callback))
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            on_text
-        )
-    )
+    logger.info("🤖 Forex AI Bot muvaffaqiyatli ishga tushdi!")
+    print("Bot ishga tushdi...")
 
-    app.add_handler(
-        CallbackQueryHandler(on_callback)
-    )
-
-    logger.info("🤖 FREE Forex AI Bot ishga tushdi!")
-
-    app.run_polling(
-        drop_pending_updates=True
-    )
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    main()
+    main()    main()
