@@ -16,8 +16,9 @@ from datetime import datetime
 
 # ─────────────────────────────────────────
 
-TWELVE_API_KEY = “YOUR_TWELVE_DATA_API_KEY”   # twelvedata.com — BEPUL!
-GEMINI_API_KEY = “YOUR_GEMINI_API_KEY”         # aistudio.google.com — BEPUL!
+TWELVE_API_KEY = “0bfaff2b15804663ae9d9536c6cf0cac”   # twelvedata.com — BEPUL!
+GEMINI_API_KEY = “AIzaSyDQ2oUz2d-2ZpIM0sAc1F4oOPmSQxl3sYE
+”         # aistudio.google.com — BEPUL!
 
 # ─────────────────────────────────────────
 
