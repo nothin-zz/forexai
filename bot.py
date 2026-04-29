@@ -36,8 +36,9 @@ scan_all_pairs, WATCH_PAIRS
 
 # ─────────────────────────────────────────
 
-TELEGRAM_TOKEN = “YOUR_TELEGRAM_BOT_TOKEN”   # @BotFather
-GEMINI_API_KEY = “YOUR_GEMINI_API_KEY”       # aistudio.google.com — BEPUL!
+TELEGRAM_TOKEN = “8776282635:AAExON8KZhR8w_ZfZthurcLb7LB2AsMuk9A
+”   # @BotFather
+GEMINI_API_KEY = “AIzaSyDQ2oUz2d-2ZpIM0sAc1F4oOPmSQxl3sYE”       # aistudio.google.com — BEPUL!
 
 # ─────────────────────────────────────────
 
