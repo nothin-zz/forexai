@@ -1,0 +1,487 @@
+//@version=5
+indicator("Phantom Zone — Prop Strategy", shorttitle="PZ Pro", overlay=true, max_boxes_count=200, max_lines_count=300, max_labels_count=200)
+
+// ╔══════════════════════════════════════════════════════════╗
+//  PHANTOM ZONE — ORIGINAL PROP FIRM STRATEGY
+//  Muallif: O'zimdan (Custom Logic)
+//
+//  STRATEGIYA MOHIYATI:
+//  Bozorda narx har doim "Phantom Zone" ga qaytadi.
+//  Bu zona 3 ta kuchning kesishgan nuqtasi:
+//    1. Volume Imbalance (Hajm nomutanosibligi)
+//    2. Price Rejection Cluster (Narx rad etish klasteri)
+//    3. Institutional Footprint (Katta oyinchi izi)
+//
+//  KIRISH SHARTI:
+//  Narx Phantom Zone ga tegib, 3 bar ichida qaytish
+//  signali bersa — KIRISH. Aks holda — kutish.
+//
+//  RR: 1:4 — 1:6 (Prop firm uchun ideal)
+//  Risk: Har tradeda hisob 0.5%
+//  Win Rate target: 55%+ (1:5 RR bilan profitli)
+// ╚══════════════════════════════════════════════════════════╝
+
+// ══════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════
+g1 = "PHANTOM ZONE"
+pz_lb       = input.int(15,    "Zone Formation Bars",     group=g1, minval=5,  maxval=50)
+pz_touch    = input.int(2,     "Min Zone Touches",        group=g1, minval=1,  maxval=5)
+rej_bars    = input.int(3,     "Rejection Confirm Bars",  group=g1, minval=1,  maxval=5)
+show_zones  = input.bool(true, "Show Phantom Zones",      group=g1)
+
+g2 = "VOLUME FILTER"
+use_vol     = input.bool(true,  "Use Volume Filter",      group=g2)
+vol_mult    = input.float(1.3,  "Volume Spike Multiplier",group=g2, minval=1.0, step=0.1)
+vol_lb      = input.int(20,     "Volume MA Length",       group=g2, minval=5,  maxval=50)
+
+g3 = "MOMENTUM"
+rsi_len     = input.int(14,    "RSI Length",              group=g3, minval=5,  maxval=30)
+rsi_ob      = input.float(65,  "RSI Overbought",          group=g3, minval=55, maxval=80)
+rsi_os      = input.float(35,  "RSI Oversold",            group=g3, minval=20, maxval=45)
+use_macd    = input.bool(true,  "Use MACD Filter",        group=g3)
+
+g4 = "MULTI-TIMEFRAME"
+htf         = input.timeframe("60", "HTF Timeframe",     group=g4)
+use_htf     = input.bool(true, "Use HTF Trend Filter",   group=g4)
+
+g5 = "RISK / REWARD"
+risk_pct    = input.float(0.5, "Risk per Trade %",        group=g5, minval=0.1, maxval=2.0, step=0.1)
+rr_tp1      = input.float(2.5, "TP1 RR",                  group=g5, minval=1.0, step=0.5)
+rr_tp2      = input.float(4.5, "TP2 RR",                  group=g5, minval=1.0, step=0.5)
+rr_tp3      = input.float(6.0, "TP3 RR",                  group=g5, minval=1.0, step=0.5)
+sl_atr_mult = input.float(1.2, "SL ATR Multiplier",       group=g5, minval=0.5, step=0.1)
+
+g6 = "DISPLAY"
+show_sig    = input.bool(true, "Show Entry Signals",      group=g6)
+show_lines  = input.bool(true, "Show SL/TP Lines",        group=g6)
+show_panel  = input.bool(true, "Show Dashboard",          group=g6)
+show_pz_bg  = input.bool(true, "Show Session Background", group=g6)
+
+// ══════════════════════════════════════════
+// BASE CALCULATIONS
+// ══════════════════════════════════════════
+atr14  = ta.atr(14)
+atr5   = ta.atr(5)
+volMA  = ta.sma(volume, vol_lb)
+rsi    = ta.rsi(close, rsi_len)
+
+[macdL, macdS, macdH] = ta.macd(close, 12, 26, 9)
+macdBull = macdH > 0 and macdH > macdH[1]
+macdBear = macdH < 0 and macdH < macdH[1]
+
+// HTF Trend
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma50 = request.security(syminfo.tickerid, htf, ta.ema(close, 50))
+htfEma200= request.security(syminfo.tickerid, htf, ta.ema(close, 200))
+htfBull  = htfClose > htfEma50 and htfEma50 > htfEma200
+htfBear  = htfClose < htfEma50 and htfEma50 < htfEma200
+
+// Current TF EMA
+ema21  = ta.ema(close, 21)
+ema50  = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+
+plot(ema21,  "EMA21",  color=color.new(#A8FF78,50), linewidth=1)
+plot(ema50,  "EMA50",  color=color.new(#FFD700,40), linewidth=1)
+plot(ema200, "EMA200", color=color.new(#FF4757,30), linewidth=2)
+
+// ══════════════════════════════════════════
+// PHANTOM ZONE ENGINE
+// ══════════════════════════════════════════
+// Zone = area where price repeatedly rejected
+// Logic: find clusters of wicks in same price range
+
+// Wick analysis
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+bodySize  = math.abs(close - open)
+wickRatio = upperWick > lowerWick ? upperWick / (bodySize + 0.0001) : lowerWick / (bodySize + 0.0001)
+
+// Strong rejection candle (wick 2x body)
+strongBullRej = lowerWick > bodySize * 2 and lowerWick > upperWick * 1.5
+strongBearRej = upperWick > bodySize * 2 and upperWick > lowerWick * 1.5
+
+// Volume spike
+volSpike = volume > volMA * vol_mult
+
+// Phantom Zone — price cluster detection
+pzHigh = ta.highest(high, pz_lb)
+pzLow  = ta.lowest(low,   pz_lb)
+pzMid  = (pzHigh + pzLow) / 2
+pzRange= pzHigh - pzLow
+
+// Zone boundaries (upper and lower phantom)
+upZoneTop = pzHigh
+upZoneBot = pzHigh - pzRange * 0.15
+loZoneTop = pzLow  + pzRange * 0.15
+loZoneBot = pzLow
+
+// Price entering zones
+inUpperZone = high >= upZoneBot and close <= upZoneTop
+inLowerZone = low  <= loZoneTop and close >= loZoneBot
+
+// ══════════════════════════════════════════
+// INSTITUTIONAL FOOTPRINT
+// Detects: large body candles after consolidation
+// ══════════════════════════════════════════
+// Consolidation = narrow range N bars
+consRange  = ta.highest(high, 8) - ta.lowest(low, 8)
+isConsolidation = consRange < atr14 * 1.5
+
+// Breakout from consolidation = institutional move
+instBull = isConsolidation[1] and bodySize > atr14 * 0.8 and close > open and close > ta.highest(high, 8)[1]
+instBear = isConsolidation[1] and bodySize > atr14 * 0.8 and close < open and close < ta.lowest(low, 8)[1]
+
+// ══════════════════════════════════════════
+// PRICE REJECTION CLUSTER
+// 3 rejections within zone = valid Phantom Zone
+// ══════════════════════════════════════════
+var int bullRejCount = 0
+var int bearRejCount = 0
+var float lastBullZone = na
+var float lastBearZone = na
+
+// Count rejections at lower zone (bull setup)
+if strongBullRej and inLowerZone
+    bullRejCount := bullRejCount + 1
+    lastBullZone := low
+    if bullRejCount > 5
+        bullRejCount := 5
+else if not inLowerZone
+    if bullRejCount > 0 and not inLowerZone[1]
+        bullRejCount := math.max(0, bullRejCount - 1)
+
+// Count rejections at upper zone (bear setup)
+if strongBearRej and inUpperZone
+    bearRejCount := bearRejCount + 1
+    lastBearZone := high
+    if bearRejCount > 5
+        bearRejCount := 5
+else if not inUpperZone
+    if bearRejCount > 0 and not inUpperZone[1]
+        bearRejCount := math.max(0, bearRejCount - 1)
+
+// Valid zones
+validBullZone = bullRejCount >= pz_touch
+validBearZone = bearRejCount >= pz_touch
+
+// ══════════════════════════════════════════
+// PHANTOM ZONE DISPLAY
+// ══════════════════════════════════════════
+if show_zones
+    // Lower Phantom Zone — potential BUY
+    box.new(bar_index - pz_lb, loZoneTop, bar_index + 20, loZoneBot,
+        bgcolor      = validBullZone ? color.new(#00D4FF,87) : color.new(#334455,94),
+        border_color = validBullZone ? color.new(#00D4FF,40) : color.new(#334455,75),
+        border_width = validBullZone ? 1 : 1,
+        border_style = validBullZone ? box.style_solid : box.style_dashed)
+
+    // Upper Phantom Zone — potential SELL
+    box.new(bar_index - pz_lb, upZoneTop, bar_index + 20, upZoneBot,
+        bgcolor      = validBearZone ? color.new(#FF6B35,87) : color.new(#443322,94),
+        border_color = validBearZone ? color.new(#FF6B35,40) : color.new(#443322,75),
+        border_width = validBearZone ? 1 : 1,
+        border_style = validBearZone ? box.style_solid : box.style_dashed)
+
+// ══════════════════════════════════════════
+// SESSION BACKGROUND
+// London Kill Zone + NY Kill Zone
+// ══════════════════════════════════════════
+lonKZ  = not na(time(timeframe.period, "0700-1000", "Europe/London"))
+nyKZ   = not na(time(timeframe.period, "1300-1600", "Europe/London"))
+asiaKZ = not na(time(timeframe.period, "0000-0300", "Europe/London"))
+
+bgcolor(show_pz_bg and lonKZ  ? color.new(#00D4FF,96) : na, title="London KZ")
+bgcolor(show_pz_bg and nyKZ   ? color.new(#A8FF78,96) : na, title="NY KZ")
+bgcolor(show_pz_bg and asiaKZ ? color.new(#FFD700,97) : na, title="Asia KZ")
+
+inKillZone = lonKZ or nyKZ
+
+// ══════════════════════════════════════════
+// SIGNAL CONDITIONS
+// ══════════════════════════════════════════
+
+// ── BUY CONDITIONS ──
+// 1. In valid Phantom Bull Zone OR just left it with bullish close
+// 2. Strong bullish rejection candle
+// 3. Volume spike confirms
+// 4. RSI not overbought
+// 5. HTF trend bullish (optional filter)
+// 6. MACD momentum turning up
+// 7. In Kill Zone session
+// 8. Institutional footprint (consolidation breakout)
+
+htfOkBuy  = use_htf ? htfBull or not htfBear : true
+volOkBuy  = use_vol ? volSpike : true
+macdOkBuy = use_macd ? macdBull or macdH > macdH[1] : true
+
+buyScore =
+    (validBullZone               ? 2 : 0) +
+    (strongBullRej               ? 2 : 0) +
+    (volOkBuy                    ? 1 : 0) +
+    (rsi < rsi_ob                ? 1 : 0) +
+    (rsi < 50                    ? 1 : 0) +
+    (htfOkBuy                    ? 1 : 0) +
+    (macdOkBuy                   ? 1 : 0) +
+    (inKillZone                  ? 1 : 0) +
+    (close > ema21               ? 1 : 0) +
+    (instBull or instBull[1]     ? 1 : 0)
+
+// ── SELL CONDITIONS ──
+htfOkSell  = use_htf ? htfBear or not htfBull : true
+volOkSell  = use_vol ? volSpike : true
+macdOkSell = use_macd ? macdBear or macdH < macdH[1] : true
+
+sellScore =
+    (validBearZone               ? 2 : 0) +
+    (strongBearRej               ? 2 : 0) +
+    (volOkSell                   ? 1 : 0) +
+    (rsi > rsi_os                ? 1 : 0) +
+    (rsi > 50                    ? 1 : 0) +
+    (htfOkSell                   ? 1 : 0) +
+    (macdOkSell                  ? 1 : 0) +
+    (inKillZone                  ? 1 : 0) +
+    (close < ema21               ? 1 : 0) +
+    (instBear or instBear[1]     ? 1 : 0)
+
+// Max score = 12
+// Signal fires at 7+ (high quality only)
+buySig  = buyScore  >= 7 and not (buyScore[1]  >= 7)
+sellSig = sellScore >= 7 and not (sellScore[1] >= 7)
+
+grade(s) => s >= 11 ? "S" : s >= 9 ? "A+" : s >= 8 ? "A" : s >= 7 ? "B+" : "B"
+
+// ══════════════════════════════════════════
+// WIN / LOSS TRACKER
+// TP1 hit = WIN, SL hit = LOSS
+// ══════════════════════════════════════════
+var int   totTrades   = 0
+var int   totWins     = 0
+var int   totLosses   = 0
+var float netPips     = 0.0
+var float maxWinStreak  = 0.0
+var float curWinStreak  = 0.0
+var float maxLossStreak = 0.0
+var float curLossStreak = 0.0
+
+var bool  tradeOpen   = false
+var bool  isBuy       = false
+var float tEntry      = na
+var float tSL         = na
+var float tTP1        = na
+var float tTP2        = na
+var float tTP3        = na
+
+if buySig and not tradeOpen
+    tradeOpen  := true
+    isBuy      := true
+    tEntry     := close
+    tSL        := close - atr14 * sl_atr_mult
+    tTP1       := close + (close - tSL) * rr_tp1
+    tTP2       := close + (close - tSL) * rr_tp2
+    tTP3       := close + (close - tSL) * rr_tp3
+    totTrades  := totTrades + 1
+
+if sellSig and not tradeOpen
+    tradeOpen  := true
+    isBuy      := false
+    tEntry     := close
+    tSL        := close + atr14 * sl_atr_mult
+    tTP1       := close - (tSL - close) * rr_tp1
+    tTP2       := close - (tSL - close) * rr_tp2
+    tTP3       := close - (tSL - close) * rr_tp3
+    totTrades  := totTrades + 1
+
+if tradeOpen and not na(tSL) and not na(tTP1)
+    hitTP1 = isBuy ? high >= tTP1 : low  <= tTP1
+    hitSL  = isBuy ? low  <= tSL  : high >= tSL
+
+    if hitTP1
+        totWins      := totWins + 1
+        netPips      := netPips + math.abs(tTP1 - tEntry)
+        curWinStreak := curWinStreak + 1
+        curLossStreak:= 0
+        if curWinStreak > maxWinStreak
+            maxWinStreak := curWinStreak
+        tradeOpen    := false
+
+    else if hitSL
+        totLosses    := totLosses + 1
+        netPips      := netPips - math.abs(tEntry - tSL)
+        curLossStreak:= curLossStreak + 1
+        curWinStreak := 0
+        if curLossStreak > maxLossStreak
+            maxLossStreak := curLossStreak
+        tradeOpen    := false
+
+closedTrades = totWins + totLosses
+winRate      = closedTrades > 0 ? math.round(totWins / closedTrades * 100) : 0
+pnlSign      = netPips >= 0 ? "+" : ""
+
+// Expected Value calculation
+// EV = (WR × avg_win) - ((1-WR) × avg_loss)
+avgWin  = totWins   > 0 ? netPips / totWins   : 0.0
+avgLoss = totLosses > 0 ? math.abs(netPips - totWins * avgWin) / totLosses : 0.0
+wr_dec  = winRate / 100.0
+ev      = closedTrades > 0 ? math.round((wr_dec * rr_tp1 - (1 - wr_dec) * 1.0) * 100) / 100 : 0.0
+evSign  = ev >= 0 ? "+" : ""
+
+// ══════════════════════════════════════════
+// SIGNAL LABELS — minimal & clean
+// ══════════════════════════════════════════
+if show_sig and buySig
+    slB  = close - atr14 * sl_atr_mult
+    tp1B = close + (close - slB) * rr_tp1
+    tp2B = close + (close - slB) * rr_tp2
+    tp3B = close + (close - slB) * rr_tp3
+
+    label.new(bar_index, low - atr14 * 1.6,
+        "▲ PHANTOM BUY  " + grade(buyScore) + "  " + str.tostring(buyScore) + "/12\n" +
+        "E:" + str.tostring(close,"#.##") + "   SL:" + str.tostring(slB,"#.##") + "\n" +
+        "T1:" + str.tostring(tp1B,"#.##") + "  T2:" + str.tostring(tp2B,"#.##") + "\n" +
+        "T3:" + str.tostring(tp3B,"#.##") + "  RR 1:" + str.tostring(rr_tp3,"#.#"),
+        style=label.style_label_up,
+        color=color.new(#001A2E,10),
+        textcolor=color.new(#00D4FF,0),
+        size=size.small)
+
+    if show_lines
+        line.new(bar_index, slB,  bar_index+25, slB,  color=color.new(#FF4757,35), width=1, style=line.style_dashed)
+        line.new(bar_index, tp1B, bar_index+25, tp1B, color=color.new(#A8FF78,25), width=1, style=line.style_dashed)
+        line.new(bar_index, tp2B, bar_index+25, tp2B, color=color.new(#FFD700,35), width=1, style=line.style_dotted)
+        line.new(bar_index, tp3B, bar_index+25, tp3B, color=color.new(#FF9FF3,45), width=1, style=line.style_dotted)
+
+if show_sig and sellSig
+    slS  = close + atr14 * sl_atr_mult
+    tp1S = close - (slS - close) * rr_tp1
+    tp2S = close - (slS - close) * rr_tp2
+    tp3S = close - (slS - close) * rr_tp3
+
+    label.new(bar_index, high + atr14 * 1.6,
+        "▼ PHANTOM SELL  " + grade(sellScore) + "  " + str.tostring(sellScore) + "/12\n" +
+        "E:" + str.tostring(close,"#.##") + "   SL:" + str.tostring(slS,"#.##") + "\n" +
+        "T1:" + str.tostring(tp1S,"#.##") + "  T2:" + str.tostring(tp2S,"#.##") + "\n" +
+        "T3:" + str.tostring(tp3S,"#.##") + "  RR 1:" + str.tostring(rr_tp3,"#.#"),
+        style=label.style_label_down,
+        color=color.new(#2E0008,10),
+        textcolor=color.new(#FF4757,0),
+        size=size.small)
+
+    if show_lines
+        line.new(bar_index, slS,  bar_index+25, slS,  color=color.new(#FF4757,35), width=1, style=line.style_dashed)
+        line.new(bar_index, tp1S, bar_index+25, tp1S, color=color.new(#A8FF78,25), width=1, style=line.style_dashed)
+        line.new(bar_index, tp2S, bar_index+25, tp2S, color=color.new(#FFD700,35), width=1, style=line.style_dotted)
+        line.new(bar_index, tp3S, bar_index+25, tp3S, color=color.new(#FF9FF3,45), width=1, style=line.style_dotted)
+
+// ══════════════════════════════════════════
+// BAR COLOR
+// ══════════════════════════════════════════
+barcolor(buySig  ? color.new(#00D4FF,45) : na, title="BUY bar")
+barcolor(sellSig ? color.new(#FF4757,45) : na, title="SELL bar")
+
+// ══════════════════════════════════════════
+// DASHBOARD — full stats
+// ══════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 18,
+    bgcolor      = color.new(#03070F,5),
+    border_color = color.new(#1A2535,60),
+    border_width = 1,
+    frame_color  = color.new(#1E3A5F,60),
+    frame_width  = 1)
+
+C_KEY  = color.new(#506070,0)
+C_VAL  = color.new(#D0DCE8,0)
+C_GOLD = color.new(#C9A84C,0)
+C_BG1  = color.new(#06101A,0)
+C_BG2  = color.new(#0A1828,0)
+C_DIV  = color.new(#080F18,0)
+SML    = size.tiny
+MED    = size.small
+
+if barstate.islast and show_panel
+
+    // Header
+    table.cell(dash,0,0,"PHANTOM ZONE",       bgcolor=color.new(#071220,0), text_color=C_GOLD, text_size=MED, text_halign=text.align_center)
+    table.cell(dash,1,0,"PROP STRATEGY",      bgcolor=color.new(#071220,0), text_color=color.new(#2A4A6A,0), text_size=SML, text_halign=text.align_center)
+
+    // HTF Trend
+    table.cell(dash,0,1,"HTF TREND",   bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,1, htfBull ? "BULL ▲" : htfBear ? "BEAR ▼" : "NEUTRAL", bgcolor=C_BG2, text_color=htfBull ? color.new(#00D4FF,0) : htfBear ? color.new(#FF4757,0) : color.new(#FFD700,0), text_size=SML)
+
+    // Kill Zone
+    table.cell(dash,0,2,"KILL ZONE",   bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    kzTxt = lonKZ ? "LONDON" : nyKZ ? "NEW YORK" : asiaKZ ? "ASIA" : "CLOSED"
+    kzCol = lonKZ ? color.new(#00D4FF,0) : nyKZ ? color.new(#A8FF78,0) : asiaKZ ? color.new(#FFD700,0) : color.new(#2A3A4A,0)
+    table.cell(dash,1,2, kzTxt, bgcolor=C_BG1, text_color=kzCol, text_size=SML)
+
+    // Scores
+    bGradeCol = buyScore  >= 9 ? color.new(#00D4FF,0) : buyScore  >= 7 ? color.new(#A8FF78,0) : color.new(#445566,0)
+    sGradeCol = sellScore >= 9 ? color.new(#FF4757,0) : sellScore >= 7 ? color.new(#FF9FF3,0) : color.new(#445566,0)
+
+    table.cell(dash,0,3,"BUY  SCORE",  bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,3, str.tostring(buyScore) + "/12  [" + grade(buyScore) + "]", bgcolor=C_BG2, text_color=bGradeCol, text_size=SML)
+
+    table.cell(dash,0,4,"SELL SCORE",  bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,4, str.tostring(sellScore) + "/12  [" + grade(sellScore) + "]", bgcolor=C_BG1, text_color=sGradeCol, text_size=SML)
+
+    // Zone strength
+    table.cell(dash,0,5,"BULL ZONE",   bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,5, str.tostring(bullRejCount) + " touch" + (bullRejCount == 1 ? "" : "es"), bgcolor=C_BG2, text_color=validBullZone ? color.new(#00D4FF,0) : color.new(#334455,0), text_size=SML)
+
+    table.cell(dash,0,6,"BEAR ZONE",   bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,6, str.tostring(bearRejCount) + " touch" + (bearRejCount == 1 ? "" : "es"), bgcolor=C_BG1, text_color=validBearZone ? color.new(#FF6B35,0) : color.new(#334455,0), text_size=SML)
+
+    // Divider — Stats
+    table.cell(dash,0,7,"─── PERFORMANCE ───", bgcolor=C_DIV, text_color=color.new(#1E3040,0), text_size=size.tiny, text_halign=text.align_center)
+    table.cell(dash,1,7,"", bgcolor=C_DIV, text_color=C_KEY, text_size=size.tiny)
+
+    table.cell(dash,0,8,"TOTAL",       bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,8, str.tostring(totTrades) + " trades", bgcolor=C_BG2, text_color=C_VAL, text_size=SML)
+
+    table.cell(dash,0,9,"WIN / LOSS",  bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,9, str.tostring(totWins) + "W  /  " + str.tostring(totLosses) + "L", bgcolor=C_BG1, text_color=C_VAL, text_size=SML)
+
+    wrCol = winRate >= 60 ? color.new(#A8FF78,0) : winRate >= 50 ? color.new(#FFD700,0) : color.new(#FF4757,0)
+    table.cell(dash,0,10,"WIN RATE",   bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,10, str.tostring(winRate) + "%", bgcolor=C_BG2, text_color=wrCol, text_size=SML)
+
+    pnlCol = netPips >= 0 ? color.new(#A8FF78,0) : color.new(#FF4757,0)
+    table.cell(dash,0,11,"NET PIPS",   bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,11, pnlSign + str.tostring(math.round(netPips,1)), bgcolor=C_BG1, text_color=pnlCol, text_size=SML)
+
+    evCol = ev >= 0 ? color.new(#A8FF78,0) : color.new(#FF4757,0)
+    table.cell(dash,0,12,"EXP. VALUE", bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,12, evSign + str.tostring(ev,"#.##") + "R", bgcolor=C_BG2, text_color=evCol, text_size=SML)
+
+    table.cell(dash,0,13,"WIN STREAK", bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,13, str.tostring(int(maxWinStreak)) + " max  /  " + str.tostring(int(curWinStreak)) + " cur", bgcolor=C_BG1, text_color=color.new(#A8FF78,0), text_size=SML)
+
+    table.cell(dash,0,14,"LOSS STREAK",bgcolor=C_BG2, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,14, str.tostring(int(maxLossStreak)) + " max  /  " + str.tostring(int(curLossStreak)) + " cur", bgcolor=C_BG2, text_color=color.new(#FF4757,0), text_size=SML)
+
+    // Divider — RSI/MACD
+    table.cell(dash,0,15,"─── FILTERS ───", bgcolor=C_DIV, text_color=color.new(#1E3040,0), text_size=size.tiny, text_halign=text.align_center)
+    table.cell(dash,1,15,"", bgcolor=C_DIV, text_color=C_KEY, text_size=size.tiny)
+
+    rsiCol = rsi < 35 ? color.new(#00D4FF,0) : rsi > 65 ? color.new(#FF4757,0) : color.new(#FFD700,0)
+    table.cell(dash,0,16,"RSI",         bgcolor=C_BG1, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,16, str.tostring(math.round(rsi,1)), bgcolor=C_BG1, text_color=rsiCol, text_size=SML)
+
+    // Status
+    sigTxt = buySig  ? "BUY SIGNAL" : sellSig ? "SELL SIGNAL" : tradeOpen ? "IN TRADE" : "WAITING"
+    sigBG  = buySig  ? color.new(#001A2E,50) : sellSig ? color.new(#2E0008,50) : tradeOpen ? color.new(#1A1A00,50) : C_DIV
+    sigCol = buySig  ? color.new(#00D4FF,0)  : sellSig ? color.new(#FF4757,0)  : tradeOpen ? color.new(#FFD700,0)  : color.new(#2A3A4A,0)
+    table.cell(dash,0,17,"STATUS",      bgcolor=sigBG, text_color=C_KEY, text_size=SML)
+    table.cell(dash,1,17, sigTxt,       bgcolor=sigBG, text_color=sigCol, text_size=SML)
+
+// ══════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════
+alertcondition(buySig,       "Phantom BUY",       "PHANTOM BUY on {{ticker}} {{interval}} | Score:{{plot_0}} | Entry:{{close}}")
+alertcondition(sellSig,      "Phantom SELL",      "PHANTOM SELL on {{ticker}} {{interval}} | Score:{{plot_1}} | Entry:{{close}}")
+alertcondition(validBullZone,"Bull Zone Active",  "Phantom Bull Zone ACTIVE on {{ticker}}")
+alertcondition(validBearZone,"Bear Zone Active",  "Phantom Bear Zone ACTIVE on {{ticker}}")
+
+plot(buyScore,  "Buy Score",  color=color.new(#00D4FF,80), display=display.none)
+plot(sellScore, "Sell Score", color=color.new(#FF4757,80), display=display.none)
