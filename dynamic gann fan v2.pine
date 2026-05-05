@@ -1,0 +1,233 @@
+//@version=5
+// ============================================================
+//  DYNAMIC GANN FAN SUITE  |  Pine Script v5
+//  Version: 2.0.0  |  Full fix: signals, fan origin, priceFactor
+// ============================================================
+indicator("Dynamic Gann Fan Suite v2", overlay=true, max_lines_count=500, max_labels_count=200)
+
+// ---- INPUTS ----
+i_lookback    = input.int(100,   "Lookback Period (bars)",    minval=10,    maxval=500)
+i_fanLength   = input.int(100,   "Fan Line Length (bars)",    minval=20,    maxval=500)
+i_showBull    = input.bool(true,  "Show Bullish Fan")
+i_showBear    = input.bool(true,  "Show Bearish Fan")
+i_showSignals = input.bool(true,  "Show Signals")
+i_priceFactor = input.float(10.0, "Price/Bar Factor (XAUUSD=10, Forex=0.01, BTC=50)", minval=0.0001, maxval=10000.0, step=0.1)
+i_sigFilter   = input.bool(true,  "Filter: confirmed bars only (reduces noise)")
+
+// ---- COLORS ----
+C_BULL_1X1   = color.new(#FFD700, 0)
+C_BULL_OTHER = color.new(#00BFFF, 55)
+C_BEAR_1X1   = color.new(#FFD700, 0)
+C_BEAR_OTHER = color.new(#FF4C4C, 55)
+C_BUY        = color.new(#00C853, 0)
+C_SELL       = color.new(#FF1744, 0)
+
+// ---- GANN ANGLES ----
+float[] bullAngles = array.from(18.75, 26.25, 45.0, 63.75, 71.25)
+float[] bearAngles = array.from(-15.0, -18.75, -26.25, -45.0, -63.25, -71.25, -75.0)
+
+// ---- PERSISTENT STATE ----
+var line[]  bullLines  = array.new_line()
+var line[]  bearLines  = array.new_line()
+var label[] bullLabels = array.new_label()
+var label[] bearLabels = array.new_label()
+var label[] sigLabels  = array.new_label()
+
+var int   lastLowBar    = na
+var float lastLowPrice  = na
+var int   lastHighBar   = na
+var float lastHighPrice = na
+
+// Signal cooldown: avoid repeating same signal
+var int lastBuyBar  = na
+var int lastSellBar = na
+
+// ---- HELPERS ----
+getSlope(float deg) =>
+    math.tan(deg * math.pi / 180.0) * i_priceFactor
+
+gannPx(float origin, float slope, int offset) =>
+    origin + slope * offset
+
+// ---- SWING DETECTION (safe, no RE10008) ----
+safeLB     = math.max(math.min(i_lookback, bar_index), 2)
+loIdx      = ta.lowestbars(low,  safeLB)
+hiIdx      = ta.highestbars(high, safeLB)
+safeLoIdx  = math.min(math.max(loIdx, 0), bar_index)
+safeHiIdx  = math.min(math.max(hiIdx, 0), bar_index)
+
+swingLowBar    = bar_index - safeLoIdx
+swingLowPrice  = low[safeLoIdx]
+swingHighBar   = bar_index - safeHiIdx
+swingHighPrice = high[safeHiIdx]
+
+newLow  = na(lastLowBar)  or swingLowBar  != lastLowBar
+newHigh = na(lastHighBar) or swingHighBar != lastHighBar
+
+// ---- DRAW BULLISH FAN (from Swing Low) ----
+if i_showBull and newLow
+    for ln in bullLines
+        line.delete(ln)
+    array.clear(bullLines)
+    for lb in bullLabels
+        label.delete(lb)
+    array.clear(bullLabels)
+
+    lastLowBar   := swingLowBar
+    lastLowPrice := swingLowPrice
+
+    for i = 0 to array.size(bullAngles) - 1
+        ang   = array.get(bullAngles, i)
+        slope = getSlope(ang)
+        is1x1 = ang == 45.0
+        endX  = swingLowBar + i_fanLength
+        endY  = gannPx(swingLowPrice, slope, i_fanLength)
+
+        ln = line.new(
+             x1    = swingLowBar, y1 = swingLowPrice,
+             x2    = endX,        y2 = endY,
+             xloc  = xloc.bar_index,
+             extend = extend.right,
+             color  = is1x1 ? C_BULL_1X1 : C_BULL_OTHER,
+             width  = is1x1 ? 2 : 1)
+        array.push(bullLines, ln)
+
+        // Label near the line tip
+        lb = label.new(
+             x = swingLowBar + math.round(i_fanLength * 0.4),
+             y = gannPx(swingLowPrice, slope, math.round(i_fanLength * 0.4)),
+             text = str.tostring(ang) + "deg",
+             xloc = xloc.bar_index,
+             color = color.new(color.black, 100),
+             textcolor = is1x1 ? C_BULL_1X1 : C_BULL_OTHER,
+             style = label.style_none,
+             size  = size.tiny)
+        array.push(bullLabels, lb)
+
+// ---- DRAW BEARISH FAN (from Swing High) ----
+if i_showBear and newHigh
+    for ln in bearLines
+        line.delete(ln)
+    array.clear(bearLines)
+    for lb in bearLabels
+        label.delete(lb)
+    array.clear(bearLabels)
+
+    lastHighBar   := swingHighBar
+    lastHighPrice := swingHighPrice
+
+    for i = 0 to array.size(bearAngles) - 1
+        ang   = array.get(bearAngles, i)
+        slope = getSlope(ang)
+        is1x1 = ang == -45.0
+        endX  = swingHighBar + i_fanLength
+        endY  = gannPx(swingHighPrice, slope, i_fanLength)
+
+        ln = line.new(
+             x1    = swingHighBar, y1 = swingHighPrice,
+             x2    = endX,         y2 = endY,
+             xloc  = xloc.bar_index,
+             extend = extend.right,
+             color  = is1x1 ? C_BEAR_1X1 : C_BEAR_OTHER,
+             width  = is1x1 ? 2 : 1)
+        array.push(bearLines, ln)
+
+        lb = label.new(
+             x = swingHighBar + math.round(i_fanLength * 0.4),
+             y = gannPx(swingHighPrice, slope, math.round(i_fanLength * 0.4)),
+             text = str.tostring(ang) + "deg",
+             xloc = xloc.bar_index,
+             color = color.new(color.black, 100),
+             textcolor = is1x1 ? C_BEAR_1X1 : C_BEAR_OTHER,
+             style = label.style_none,
+             size  = size.tiny)
+        array.push(bearLabels, lb)
+
+// ---- SIGNALS (with noise filter) ----
+// Only fire on confirmed bars + cooldown of 3 bars between signals
+canSignal = i_showSignals and barstate.isconfirmed and not na(lastLowBar) and not na(lastHighBar)
+
+if canSignal
+    barsLow  = bar_index - lastLowBar
+    barsHigh = bar_index - lastHighBar
+
+    // --- BUY signals ---
+    for i = 0 to array.size(bullAngles) - 1
+        ang      = array.get(bullAngles, i)
+        slope    = getSlope(ang)
+        currLvl  = gannPx(lastLowPrice, slope, barsLow)
+        prevLvl  = gannPx(lastLowPrice, slope, barsLow - 1)
+
+        // Cross-up condition
+        didCross = close[1] < prevLvl and close >= currLvl
+
+        // Cooldown: no buy signal if we had one within last 3 bars
+        cooldownOk = na(lastBuyBar) or (bar_index - lastBuyBar) >= 3
+
+        if didCross and cooldownOk
+            lastBuyBar := bar_index
+
+            tpIdx   = math.min(i + 1, array.size(bullAngles) - 1)
+            slIdx   = math.max(i - 1, -1)
+            tpLvl   = gannPx(lastLowPrice, getSlope(array.get(bullAngles, tpIdx)), barsLow)
+            slLvl   = slIdx >= 0 ? gannPx(lastLowPrice, getSlope(array.get(bullAngles, slIdx)), barsLow) : lastLowPrice
+
+            txt = "BUY " + str.tostring(array.get(bullAngles, i)) + "deg" +
+                  "\nEntry: " + str.tostring(close, "#.00") +
+                  "\nTP:    " + str.tostring(tpLvl, "#.00") +
+                  "\nSL:    " + str.tostring(slLvl, "#.00")
+
+            lbl = label.new(bar_index, low, txt,
+                 xloc      = xloc.bar_index,
+                 yloc      = yloc.belowbar,
+                 color     = C_BUY,
+                 textcolor = color.white,
+                 style     = label.style_label_up,
+                 size      = size.small)
+            array.push(sigLabels, lbl)
+
+    // --- SELL signals ---
+    for i = 0 to array.size(bearAngles) - 1
+        ang      = array.get(bearAngles, i)
+        slope    = getSlope(ang)
+        currLvl  = gannPx(lastHighPrice, slope, barsHigh)
+        prevLvl  = gannPx(lastHighPrice, slope, barsHigh - 1)
+
+        didCross   = close[1] > prevLvl and close <= currLvl
+        cooldownOk = na(lastSellBar) or (bar_index - lastSellBar) >= 3
+
+        if didCross and cooldownOk
+            lastSellBar := bar_index
+
+            tpIdx  = math.min(i + 1, array.size(bearAngles) - 1)
+            slIdx  = math.max(i - 1, -1)
+            tpLvl  = gannPx(lastHighPrice, getSlope(array.get(bearAngles, tpIdx)), barsHigh)
+            slLvl  = slIdx >= 0 ? gannPx(lastHighPrice, getSlope(array.get(bearAngles, slIdx)), barsHigh) : lastHighPrice
+
+            txt = "SELL " + str.tostring(array.get(bearAngles, i)) + "deg" +
+                  "\nEntry: " + str.tostring(close, "#.00") +
+                  "\nTP:    " + str.tostring(tpLvl, "#.00") +
+                  "\nSL:    " + str.tostring(slLvl, "#.00")
+
+            lbl = label.new(bar_index, high, txt,
+                 xloc      = xloc.bar_index,
+                 yloc      = yloc.abovebar,
+                 color     = C_SELL,
+                 textcolor = color.white,
+                 style     = label.style_label_down,
+                 size      = size.small)
+            array.push(sigLabels, lbl)
+
+// Max 30 signal labels on chart
+if array.size(sigLabels) > 30
+    label.delete(array.shift(sigLabels))
+
+// ---- ORIGIN MARKERS ----
+plotshape(newLow  and i_showBull, title="Swing Low",  style=shape.triangleup,
+          location=location.belowbar, color=C_BUY,  size=size.small)
+plotshape(newHigh and i_showBear, title="Swing High", style=shape.triangledown,
+          location=location.abovebar, color=C_SELL, size=size.small)
+
+// ---- ALERTS ----
+alertcondition(not na(lastBuyBar)  and bar_index == lastBuyBar,  "Gann BUY Signal",  "Gann Fan: BUY signal fired")
+alertcondition(not na(lastSellBar) and bar_index == lastSellBar, "Gann SELL Signal", "Gann Fan: SELL signal fired")
