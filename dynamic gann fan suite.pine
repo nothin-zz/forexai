@@ -1,0 +1,215 @@
+//@version=5
+// ============================================================
+//  DYNAMIC GANN FAN SUITE  |  Pine Script v5
+//  Timeframe: 1H  |  Version: 1.1.0  (RE10008 fix)
+// ============================================================
+indicator("Dynamic Gann Fan Suite", overlay=true, max_lines_count=500, max_labels_count=200)
+
+// ---- INPUT PARAMETERS ----
+i_lookback    = input.int(100,  "Lookback Period (bars)", minval=10, maxval=500)
+i_showBull    = input.bool(true, "Show Bullish Fan")
+i_showBear    = input.bool(true, "Show Bearish Fan")
+i_fanLength   = input.int(200,  "Fan Line Length (bars)", minval=50, maxval=1000)
+i_showSignals = input.bool(true, "Show Buy/Sell Signals")
+i_priceFactor = input.float(1.0, "Price/Bar Ratio Factor", minval=0.001, maxval=1000.0, step=0.001,
+                tooltip="Adjust if lines look too steep/flat. Enable Lock Price to Bar Ratio in chart settings.")
+
+// ---- COLORS ----
+C_BULL_1X1   = color.new(#FFD700, 0)
+C_BULL_OTHER = color.new(#00E5FF, 60)
+C_BEAR_1X1   = color.new(#FFD700, 0)
+C_BEAR_OTHER = color.new(#FF4C4C, 60)
+C_BUY_LBL    = color.new(#00C853, 0)
+C_SELL_LBL   = color.new(#FF1744, 0)
+
+// ---- GANN ANGLES ----
+float[] bullAngles = array.from(18.75, 26.25, 45.0, 63.75, 71.25)
+float[] bearAngles = array.from(-15.0, -18.75, -26.25, -45.0, -63.25, -71.25, -75.0)
+
+// ---- PERSISTENT ARRAYS ----
+var line[]  bullLines  = array.new_line()
+var line[]  bearLines  = array.new_line()
+var label[] bullLabels = array.new_label()
+var label[] bearLabels = array.new_label()
+var label[] sigLabels  = array.new_label()
+
+var int   lastLowBar    = na
+var float lastLowPrice  = na
+var int   lastHighBar   = na
+var float lastHighPrice = na
+
+// ---- HELPERS ----
+getSlope(float angleDeg) =>
+    math.tan(angleDeg * math.pi / 180.0) * i_priceFactor
+
+gannPrice(float originPrice, float slope, int barsOffset) =>
+    originPrice + slope * barsOffset
+
+// ---- SAFE SWING DETECTION (RE10008 fix) ----
+// Clamp lookback so we never reference bars before bar 0
+safeLB = math.min(i_lookback, math.max(bar_index, 1))
+
+lowestIdx  = ta.lowestbars(low,  safeLB)
+highestIdx = ta.highestbars(high, safeLB)
+
+// Extra safety clamp
+safeLoIdx = math.min(math.max(lowestIdx,  0), bar_index)
+safeHiIdx = math.min(math.max(highestIdx, 0), bar_index)
+
+curLowBar    = bar_index - safeLoIdx
+curLowPrice  = low[safeLoIdx]
+curHighBar   = bar_index - safeHiIdx
+curHighPrice = high[safeHiIdx]
+
+// ---- PIVOT CHANGE DETECTION ----
+newLow  = na(lastLowBar)  or curLowBar  != lastLowBar
+newHigh = na(lastHighBar) or curHighBar != lastHighBar
+
+// ---- DRAW BULLISH FAN ----
+if i_showBull and newLow
+    for ln in bullLines
+        line.delete(ln)
+    array.clear(bullLines)
+    for lb in bullLabels
+        label.delete(lb)
+    array.clear(bullLabels)
+
+    lastLowBar   := curLowBar
+    lastLowPrice := curLowPrice
+
+    for i = 0 to array.size(bullAngles) - 1
+        ang   = array.get(bullAngles, i)
+        slope = getSlope(ang)
+        is1x1 = ang == 45.0
+        x2    = curLowBar + i_fanLength
+        y2    = gannPrice(curLowPrice, slope, i_fanLength)
+
+        ln = line.new(
+             x1     = curLowBar,
+             y1     = curLowPrice,
+             x2     = x2,
+             y2     = y2,
+             xloc   = xloc.bar_index,
+             extend = extend.right,
+             color  = is1x1 ? C_BULL_1X1 : C_BULL_OTHER,
+             style  = line.style_solid,
+             width  = is1x1 ? 2 : 1)
+        array.push(bullLines, ln)
+
+        lb = label.new(
+             x         = curLowBar + 5,
+             y         = gannPrice(curLowPrice, slope, 5),
+             text      = str.tostring(ang) + "deg",
+             xloc      = xloc.bar_index,
+             color     = color.new(color.black, 100),
+             textcolor = is1x1 ? C_BULL_1X1 : C_BULL_OTHER,
+             style     = label.style_none,
+             size      = size.tiny)
+        array.push(bullLabels, lb)
+
+// ---- DRAW BEARISH FAN ----
+if i_showBear and newHigh
+    for ln in bearLines
+        line.delete(ln)
+    array.clear(bearLines)
+    for lb in bearLabels
+        label.delete(lb)
+    array.clear(bearLabels)
+
+    lastHighBar   := curHighBar
+    lastHighPrice := curHighPrice
+
+    for i = 0 to array.size(bearAngles) - 1
+        ang   = array.get(bearAngles, i)
+        slope = getSlope(ang)
+        is1x1 = ang == -45.0
+        x2    = curHighBar + i_fanLength
+        y2    = gannPrice(curHighPrice, slope, i_fanLength)
+
+        ln = line.new(
+             x1     = curHighBar,
+             y1     = curHighPrice,
+             x2     = x2,
+             y2     = y2,
+             xloc   = xloc.bar_index,
+             extend = extend.right,
+             color  = is1x1 ? C_BEAR_1X1 : C_BEAR_OTHER,
+             style  = line.style_solid,
+             width  = is1x1 ? 2 : 1)
+        array.push(bearLines, ln)
+
+        lb = label.new(
+             x         = curHighBar + 5,
+             y         = gannPrice(curHighPrice, slope, 5),
+             text      = str.tostring(ang) + "deg",
+             xloc      = xloc.bar_index,
+             color     = color.new(color.black, 100),
+             textcolor = is1x1 ? C_BEAR_1X1 : C_BEAR_OTHER,
+             style     = label.style_none,
+             size      = size.tiny)
+        array.push(bearLabels, lb)
+
+// ---- SIGNAL GENERATION ----
+if i_showSignals and not na(lastLowBar) and not na(lastHighBar)
+    barsFromLow  = bar_index - lastLowBar
+    barsFromHigh = bar_index - lastHighBar
+
+    // BUY: close crosses up a bullish angle
+    for i = 0 to array.size(bullAngles) - 1
+        ang       = array.get(bullAngles, i)
+        slope     = getSlope(ang)
+        gannLvl   = gannPrice(lastLowPrice, slope, barsFromLow)
+        prevLvl   = gannPrice(lastLowPrice, slope, barsFromLow - 1)
+        crossedUp = close[1] < prevLvl and close >= gannLvl
+
+        if crossedUp
+            tpAng   = i < array.size(bullAngles) - 1 ? array.get(bullAngles, i + 1) : ang * 1.1
+            slLevel = i > 0 ? gannPrice(lastLowPrice, getSlope(array.get(bullAngles, i - 1)), barsFromLow) : lastLowPrice
+            tpLevel = gannPrice(lastLowPrice, getSlope(tpAng), barsFromLow)
+
+            lbl = label.new(
+                 x         = bar_index,
+                 y         = low,
+                 text      = "BUY\nEntry: " + str.tostring(close, "#.##") + "\nTP: " + str.tostring(tpLevel, "#.##") + "\nSL: " + str.tostring(slLevel, "#.##"),
+                 xloc      = xloc.bar_index,
+                 yloc      = yloc.belowbar,
+                 color     = C_BUY_LBL,
+                 textcolor = color.white,
+                 style     = label.style_label_up,
+                 size      = size.small)
+            array.push(sigLabels, lbl)
+
+    // SELL: close crosses down a bearish angle
+    for i = 0 to array.size(bearAngles) - 1
+        ang         = array.get(bearAngles, i)
+        slope       = getSlope(ang)
+        gannLvl     = gannPrice(lastHighPrice, slope, barsFromHigh)
+        prevLvl     = gannPrice(lastHighPrice, slope, barsFromHigh - 1)
+        crossedDown = close[1] > prevLvl and close <= gannLvl
+
+        if crossedDown
+            tpAng   = i < array.size(bearAngles) - 1 ? array.get(bearAngles, i + 1) : ang * 1.1
+            slLevel = i > 0 ? gannPrice(lastHighPrice, getSlope(array.get(bearAngles, i - 1)), barsFromHigh) : lastHighPrice
+            tpLevel = gannPrice(lastHighPrice, getSlope(tpAng), barsFromHigh)
+
+            lbl = label.new(
+                 x         = bar_index,
+                 y         = high,
+                 text      = "SELL\nEntry: " + str.tostring(close, "#.##") + "\nTP: " + str.tostring(tpLevel, "#.##") + "\nSL: " + str.tostring(slLevel, "#.##"),
+                 xloc      = xloc.bar_index,
+                 yloc      = yloc.abovebar,
+                 color     = C_SELL_LBL,
+                 textcolor = color.white,
+                 style     = label.style_label_down,
+                 size      = size.small)
+            array.push(sigLabels, lbl)
+
+// Keep max 50 signal labels
+if array.size(sigLabels) > 50
+    label.delete(array.shift(sigLabels))
+
+// ---- ORIGIN DOTS ----
+plotshape(newLow  and i_showBull, title="Bull Origin", style=shape.circle,
+          location=location.belowbar, color=C_BUY_LBL,  size=size.tiny)
+plotshape(newHigh and i_showBear, title="Bear Origin", style=shape.circle,
+          location=location.abovebar, color=C_SELL_LBL, size=size.tiny)
